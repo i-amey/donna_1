@@ -1,0 +1,24 @@
+# Merge into ~/.hermes/config.yaml
+#
+# Hermes prefixes MCP tools as mcp_<server>_<tool>, so the entry below yields
+# mcp_ops_record_note, mcp_ops_search_notes, mcp_ops_host_status.
+# After editing, run /reload-mcp in the CLI - no restart needed.
+
+mcp_servers:
+  ops:
+    command: /home/ubuntu/hermes-stack/mcp/.venv/bin/python
+    args:
+      - /home/ubuntu/hermes-stack/mcp/server.py
+    transport: stdio
+
+# Run shell tools in a container, not on the host.
+terminal:
+  backend: docker
+
+# Sessions never auto-reset by default. For an always-on agent, reclaim context daily.
+session_reset:
+  mode: daily
+  at_hour: 4
+
+privacy:
+  redact_pii: true

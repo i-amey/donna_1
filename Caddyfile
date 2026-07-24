@@ -1,0 +1,12 @@
+# /etc/caddy/Caddyfile
+# Caddy handles TLS automatically. WebRTC to the Realtime API needs HTTPS -
+# browsers refuse microphone access on plain HTTP, so this is not optional.
+#
+#   sudo apt install -y caddy
+#   sudo cp config/Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+
+agent.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8080
+}

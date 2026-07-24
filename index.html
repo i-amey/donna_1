@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice console</title>
+<style>
+  :root {
+    --field:  #c4cac3;
+    --panel:  #f1f2ee;
+    --ink:    #121714;
+    --muted:  #5c6660;
+    --live:   #1c3fd0;
+    --alert:  #9c2b12;
+    --rule:   #a9b1a8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--field);
+    color: var(--ink);
+    font: 14px/1.5 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  main {
+    width: 100%;
+    max-width: 560px;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+  }
+  header {
+    padding: 20px 24px 16px;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+  }
+  h1 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .state {
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .state[data-live="true"] { color: var(--live); }
+  .state[data-live="error"] { color: var(--alert); }
+
+  /* Level meter: the fastest answer to "is the mic actually working" */
+  .meter {
+    display: flex;
+    gap: 3px;
+    align-items: flex-end;
+    height: 72px;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .meter span {
+    flex: 1;
+    height: 2px;
+    background: var(--rule);
+    transition: height 60ms linear, background 60ms linear;
+  }
+
+  .controls { padding: 20px 24px; display: flex; gap: 12px; }
+  button {
+    font: inherit;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 11px 20px;
+    border: 1px solid var(--ink);
+    background: var(--ink);
+    color: var(--panel);
+    cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--ink); }
+  button:disabled { opacity: 0.35; cursor: not-allowed; }
+  button:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
+
+  #log {
+    border-top: 1px solid var(--rule);
+    padding: 16px 24px 20px;
+    max-height: 260px;
+    overflow-y: auto;
+    font-size: 12.5px;
+  }
+  #log p { margin: 0 0 7px; color: var(--muted); }
+  #log p b { color: var(--ink); font-weight: 600; }
+  #log:empty::before { content: "Idle. Press connect and speak."; color: var(--muted); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .meter span { transition: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Voice console</h1>
+    <span class="state" id="state">disconnected</span>
+  </header>
+
+  <div class="meter" id="meter" aria-hidden="true"></div>
+
+  <div class="controls">
+    <button id="connect">Connect</button>
+    <button id="disconnect" class="secondary" disabled>Disconnect</button>
+  </div>
+
+  <div id="log" role="log" aria-live="polite"></div>
+</main>
+
+<audio id="sink" autoplay></audio>
+
+<script>
+const BARS = 28;
+const meter = document.getElementById("meter");
+for (let i = 0; i < BARS; i++) meter.appendChild(document.createElement("span"));
+const bars = [...meter.children];
+
+const stateEl = document.getElementById("state");
+const logEl = document.getElementById("log");
+const connectBtn = document.getElementById("connect");
+const disconnectBtn = document.getElementById("disconnect");
+
+let pc, dc, stream, audioCtx, raf;
+
+function setState(text, live) {
+  stateEl.textContent = text;
+  stateEl.dataset.live = live;
+}
+
+function log(label, text) {
+  const p = document.createElement("p");
+  p.innerHTML = `<b>${label}</b> `;
+  p.append(text);
+  logEl.appendChild(p);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function meterFrom(mediaStream) {
+  audioCtx = new AudioContext();
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 64;
+  audioCtx.createMediaStreamSource(mediaStream).connect(analyser);
+  const data = new Uint8Array(analyser.frequencyBinCount);
+
+  (function tick() {
+    analyser.getByteFrequencyData(data);
+    bars.forEach((bar, i) => {
+      const v = data[i % data.length] / 255;
+      bar.style.height = `${2 + v * 38}px`;
+      bar.style.background = v > 0.08 ? "var(--live)" : "var(--rule)";
+    });
+    raf = requestAnimationFrame(tick);
+  })();
+}
+
+async function connect() {
+  connectBtn.disabled = true;
+  try {
+    setState("minting token", false);
+    const session = await fetch("/session", { method: "POST" }).then(r => {
+      if (!r.ok) throw new Error(`Session mint failed (${r.status}). Check the bridge logs.`);
+      return r.json();
+    });
+    const token = session.client_secret?.value ?? session.value;
+    if (!token) throw new Error("No ephemeral token in the session response.");
+
+    setState("requesting mic", false);
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    meterFrom(stream);
+
+    pc = new RTCPeerConnection();
+    pc.ontrack = e => { document.getElementById("sink").srcObject = e.streams[0]; };
+    stream.getTracks().forEach(t => pc.addTrack(t, stream));
+
+    dc = pc.createDataChannel("oai-events");
+    dc.addEventListener("message", e => handleEvent(JSON.parse(e.data)));
+    dc.addEventListener("open", () => {
+      setState("live", true);
+      disconnectBtn.disabled = false;
+      log("system", "Connected. Speak when ready.");
+    });
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    const model = session.model || "gpt-realtime";
+    const answer = await fetch(`https://api.openai.com/v1/realtime?model=${model}`, {
+      method: "POST",
+      body: offer.sdp,
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/sdp" }
+    });
+    if (!answer.ok) throw new Error(`Realtime handshake failed (${answer.status}).`);
+
+    await pc.setRemoteDescription({ type: "answer", sdp: await answer.text() });
+  } catch (err) {
+    setState("error", "error");
+    log("error", err.message);
+    connectBtn.disabled = false;
+  }
+}
+
+async function handleEvent(evt) {
+  // Transcripts, for visibility while debugging turn-taking.
+  if (evt.type === "conversation.item.input_audio_transcription.completed") {
+    log("you", evt.transcript);
+  }
+  if (evt.type === "response.audio_transcript.done") {
+    log("agent", evt.transcript);
+  }
+
+  // The only tool the voice layer has: hand the instruction to Hermes.
+  if (evt.type === "response.function_call_arguments.done" && evt.name === "ask_hermes") {
+    const { prompt } = JSON.parse(evt.arguments);
+    log("hermes", `${prompt} ...`);
+
+    let output;
+    try {
+      const res = await fetch("/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt })
+      });
+      const data = await res.json();
+      output = res.ok ? data.reply : `Hermes failed: ${data.detail ?? res.status}`;
+    } catch (err) {
+      output = `Bridge unreachable: ${err.message}`;
+    }
+
+    log("hermes", output);
+    dc.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: { type: "function_call_output", call_id: evt.call_id, output }
+    }));
+    dc.send(JSON.stringify({ type: "response.create" }));
+  }
+
+  if (evt.type === "error") log("error", evt.error?.message ?? "Unknown session error.");
+}
+
+function disconnect() {
+  cancelAnimationFrame(raf);
+  bars.forEach(b => { b.style.height = "2px"; b.style.background = "var(--rule)"; });
+  stream?.getTracks().forEach(t => t.stop());
+  audioCtx?.close();
+  dc?.close();
+  pc?.close();
+  setState("disconnected", false);
+  connectBtn.disabled = false;
+  disconnectBtn.disabled = true;
+  log("system", "Disconnected.");
+}
+
+connectBtn.addEventListener("click", connect);
+disconnectBtn.addEventListener("click", disconnect);
+</script>
+</body>
+</html>

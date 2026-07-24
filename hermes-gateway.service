@@ -1,0 +1,31 @@
+# /etc/systemd/system/hermes-gateway.service
+#
+#   sudo cp config/hermes-gateway.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now hermes-gateway
+#   journalctl -u hermes-gateway -f
+#
+# Then reboot the box and confirm it comes back on its own. Surviving a restart
+# is the cheapest thing that separates production from a demo.
+
+[Unit]
+Description=Hermes Agent gateway
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu
+Environment="PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/ubuntu/.local/bin/hermes gateway
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
